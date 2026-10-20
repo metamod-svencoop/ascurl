@@ -1,6 +1,6 @@
 # ascurl
 
-Independent ascurl component of [metamod-fallguys](https://github.com/hzqst/metamod-fallguys).
+Independent ascurl component of [metamod-svencoop](https://github.com/metamod-svencoop/metamod-svencoop).
 Component history and existing Sven Co-op binary interfaces are preserved.
 
 Usage is documented in [USAGE.md](USAGE.md).
@@ -10,7 +10,7 @@ Usage is documented in [USAGE.md](USAGE.md).
 CMake 3.21+, Git, and Windows MSVC Win32 or Linux i386 multilib are required.
 
 ```sh
-git clone --recursive https://github.com/metamod-fallguys/ascurl.git
+git clone --recursive https://github.com/metamod-svencoop/ascurl.git
 cd ascurl
 cmake -S . -B build/x86/Release -A Win32
 cmake --build build/x86/Release --config Release
