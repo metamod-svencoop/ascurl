@@ -36,8 +36,9 @@ LIBCURL_FUNCTION_DEFINE(curl_multi_add_handle);
 LIBCURL_FUNCTION_DEFINE(curl_multi_remove_handle);
 LIBCURL_FUNCTION_DEFINE(curl_multi_cleanup);
 
-static CURLM* g_multi_handle    = NULL;
-static int    g_running_handles = 0;
+static CURLM*   g_multi_handle    = NULL;
+static int      g_running_handles = 0;
+static DLHANDLE g_loaded_libcurl  = NULL;
 
 static size_t read_stream_callback(char* ptr, size_t size, size_t nmemb, void* userdata)
 {
@@ -84,20 +85,20 @@ public:
         g_pfn_curl_easy_setopt(m_easy_handle, CURLOPT_URL, url);
 
         if (method == ASCURL_METHOD_POST)
-            g_pfn_curl_easy_setopt(m_easy_handle, CURLOPT_POST, 1);
+            g_pfn_curl_easy_setopt(m_easy_handle, CURLOPT_POST, 1L);
         else if (method == ASCURL_METHOD_PUT)
-            g_pfn_curl_easy_setopt(m_easy_handle, CURLOPT_PUT, 2);
+            g_pfn_curl_easy_setopt(m_easy_handle, CURLOPT_PUT, 1L);
 
-        g_pfn_curl_easy_setopt(m_easy_handle, CURLOPT_SSL_VERIFYPEER, false);
-        g_pfn_curl_easy_setopt(m_easy_handle, CURLOPT_SSL_VERIFYHOST, false);
+        g_pfn_curl_easy_setopt(m_easy_handle, CURLOPT_SSL_VERIFYPEER, 0L);
+        g_pfn_curl_easy_setopt(m_easy_handle, CURLOPT_SSL_VERIFYHOST, 0L);
 
         g_pfn_curl_easy_setopt(m_easy_handle, CURLOPT_HEADERFUNCTION, write_stream_callback);
         g_pfn_curl_easy_setopt(m_easy_handle, CURLOPT_WRITEFUNCTION, write_stream_callback);
         g_pfn_curl_easy_setopt(m_easy_handle, CURLOPT_HEADERDATA, &m_headerstream);
         g_pfn_curl_easy_setopt(m_easy_handle, CURLOPT_WRITEDATA, &m_writestream);
-        g_pfn_curl_easy_setopt(m_easy_handle, CURLOPT_CONNECTTIMEOUT_MS, conn_timeout_ms);
-        g_pfn_curl_easy_setopt(m_easy_handle, CURLOPT_TIMEOUT_MS, timeout_ms);
-        g_pfn_curl_easy_setopt(m_easy_handle, CURLOPT_NOSIGNAL, 1);
+        g_pfn_curl_easy_setopt(m_easy_handle, CURLOPT_CONNECTTIMEOUT_MS, (long)conn_timeout_ms);
+        g_pfn_curl_easy_setopt(m_easy_handle, CURLOPT_TIMEOUT_MS, (long)timeout_ms);
+        g_pfn_curl_easy_setopt(m_easy_handle, CURLOPT_NOSIGNAL, 1L);
     }
     virtual ~CBaseHTTPRequest()
     {
@@ -148,7 +149,8 @@ public:
     {
         if (!m_callback)
         {
-            m_callback = ASEXT_CreateCASFunction(aslfn, ASEXT_GetServerManager()->curModule, 1);
+            CASModule* curModule = ASEXT_GetCurrentModule ? ASEXT_GetCurrentModule() : ASEXT_GetServerManager()->curModule;
+            m_callback           = ASEXT_CreateCASFunction(aslfn, curModule, 1);
         }
     }
     virtual void CallCallback()
@@ -254,7 +256,7 @@ public:
 
     ~CAsyncHTTPRequest()
     {
-        if (m_easy_handle)
+        if (g_multi_handle && m_easy_handle)
         {
             g_pfn_curl_multi_remove_handle(g_multi_handle, m_easy_handle);
         }
@@ -275,7 +277,9 @@ public:
 
     void GetResponse(int& response, std::string& header, std::string& body)
     {
-        g_pfn_curl_easy_getinfo(m_easy_handle, CURLINFO_RESPONSE_CODE, &response);
+        long response_code = 0;
+        g_pfn_curl_easy_getinfo(m_easy_handle, CURLINFO_RESPONSE_CODE, &response_code);
+        response = (int)response_code;
 
         header = m_headerstream.str();
         body   = m_writestream.str();
@@ -310,7 +314,9 @@ public:
 
     void GetResponse(int& response, std::string& header, std::string& body)
     {
-        g_pfn_curl_easy_getinfo(m_easy_handle, CURLINFO_RESPONSE_CODE, &response);
+        long response_code = 0;
+        g_pfn_curl_easy_getinfo(m_easy_handle, CURLINFO_RESPONSE_CODE, &response_code);
+        response = (int)response_code;
 
         header = m_headerstream.str();
         body   = m_writestream.str();
@@ -325,10 +331,16 @@ static int                              m_request_index = 1;
 
 bool ASCURL_Init()
 {
+    bool loadedHandle  = false;
     auto libcurlHandle = gpMetaUtilFuncs->pfnGetModuleHandle(LIBCURL_DLL_NAME);
     if (!libcurlHandle)
     {
-        LOG_ERROR(PLID, "failed to find libcurl dll");
+        libcurlHandle = gpMetaUtilFuncs->pfnLoadLibrary(LIBCURL_DLL_NAME);
+        loadedHandle  = (libcurlHandle != NULL);
+    }
+    if (!libcurlHandle)
+    {
+        LOG_ERROR(PLID, "failed to find or load %s", LIBCURL_DLL_NAME);
         return false;
     }
 #define CURL_DLSYM(name)                                                                             \
@@ -336,6 +348,10 @@ bool ASCURL_Init()
     if (!g_pfn_##name)                                                                               \
     {                                                                                                \
         LOG_ERROR(PLID, "failed to find " #name);                                                    \
+        if (loadedHandle)                                                                            \
+            gpMetaUtilFuncs->pfnFreeLibrary(libcurlHandle);                                          \
+        else                                                                                         \
+            gpMetaUtilFuncs->pfnCloseModuleHandle(libcurlHandle);                                    \
         return false;                                                                                \
     }
 
@@ -355,12 +371,20 @@ bool ASCURL_Init()
     CURL_DLSYM(curl_multi_remove_handle);
     CURL_DLSYM(curl_multi_cleanup);
 
-    gpMetaUtilFuncs->pfnCloseModuleHandle(libcurlHandle);
+    if (loadedHandle)
+        g_loaded_libcurl = libcurlHandle;
+    else
+        gpMetaUtilFuncs->pfnCloseModuleHandle(libcurlHandle);
 
     g_multi_handle = g_pfn_curl_multi_init();
     if (!g_multi_handle)
     {
         LOG_ERROR(PLID, "curl_multi_init failed !");
+        if (g_loaded_libcurl)
+        {
+            gpMetaUtilFuncs->pfnFreeLibrary(g_loaded_libcurl);
+            g_loaded_libcurl = NULL;
+        }
         return false;
     }
 
@@ -379,6 +403,12 @@ void ASCURL_Shutdown()
     {
         g_pfn_curl_multi_cleanup(g_multi_handle);
         g_multi_handle = NULL;
+    }
+
+    if (g_loaded_libcurl)
+    {
+        gpMetaUtilFuncs->pfnFreeLibrary(g_loaded_libcurl);
+        g_loaded_libcurl = NULL;
     }
 }
 
@@ -597,9 +627,9 @@ bool ASCURL_hmac_sha1(const std::string& pwd, const std::string& msg, std::strin
         BCRYPT_HASH_HANDLE hash;
         if (BCRYPT_SUCCESS(BCryptGetProperty(context, BCRYPT_HASH_LENGTH, (PUCHAR)&hashSize, sizeof(hashSize), &hashSizeSize, 0)))
         {
-            if (BCRYPT_SUCCESS(BCryptCreateHash(context, &hash, NULL, 0, (PUCHAR)hmacSecret, hmacSecretSize, 0)))
+            if (BCRYPT_SUCCESS(BCryptCreateHash(context, &hash, NULL, 0, (PUCHAR)hmacSecret, (ULONG)hmacSecretSize, 0)))
             {
-                if (BCRYPT_SUCCESS(BCryptHashData(hash, (PUCHAR)data, dataSize, 0)))
+                if (BCRYPT_SUCCESS(BCryptHashData(hash, (PUCHAR)data, (ULONG)dataSize, 0)))
                 {
                     if (BCRYPT_SUCCESS(BCryptFinishHash(hash, hashBuf, hashSize, 0)))
                     {
@@ -633,9 +663,9 @@ bool ASCURL_hmac_md5(const std::string& pwd, const std::string& msg, std::string
         BCRYPT_HASH_HANDLE hash;
         if (BCRYPT_SUCCESS(BCryptGetProperty(context, BCRYPT_HASH_LENGTH, (PUCHAR)&hashSize, sizeof(hashSize), &hashSizeSize, 0)))
         {
-            if (BCRYPT_SUCCESS(BCryptCreateHash(context, &hash, NULL, 0, (PUCHAR)hmacSecret, hmacSecretSize, 0)))
+            if (BCRYPT_SUCCESS(BCryptCreateHash(context, &hash, NULL, 0, (PUCHAR)hmacSecret, (ULONG)hmacSecretSize, 0)))
             {
-                if (BCRYPT_SUCCESS(BCryptHashData(hash, (PUCHAR)data, dataSize, 0)))
+                if (BCRYPT_SUCCESS(BCryptHashData(hash, (PUCHAR)data, (ULONG)dataSize, 0)))
                 {
                     if (BCRYPT_SUCCESS(BCryptFinishHash(hash, hashBuf, hashSize, 0)))
                     {
@@ -669,7 +699,7 @@ bool ASCURL_md5(const char* Data, int DataByte, std::string& out)
         {
             if (BCRYPT_SUCCESS(BCryptCreateHash(context, &hash, NULL, 0, NULL, 0, 0)))
             {
-                if (BCRYPT_SUCCESS(BCryptHashData(hash, (PUCHAR)data, dataSize, 0)))
+                if (BCRYPT_SUCCESS(BCryptHashData(hash, (PUCHAR)data, (ULONG)dataSize, 0)))
                 {
                     if (BCRYPT_SUCCESS(BCryptFinishHash(hash, hashBuf, hashSize, 0)))
                     {
@@ -678,8 +708,8 @@ bool ASCURL_md5(const char* Data, int DataByte, std::string& out)
                         bSuccess = true;
                     }
                 }
+                BCryptDestroyHash(hash);
             }
-            BCryptDestroyHash(hash);
         }
         BCryptCloseAlgorithmProvider(context, 0);
     }
@@ -689,12 +719,29 @@ bool ASCURL_md5(const char* Data, int DataByte, std::string& out)
 #else
 
 #    include <openssl/hmac.h>
+#    include <openssl/md5.h>
+
+static DLHANDLE LoadLibCrypto()
+{
+    static const char* const kCandidates[] = {
+        "libcrypto.so.3",
+        "libcrypto.so.1.1",
+        "libcrypto.so",
+    };
+    for (const char* name : kCandidates)
+    {
+        DLHANDLE handle = gpMetaUtilFuncs->pfnLoadLibrary(name);
+        if (handle)
+            return handle;
+    }
+    return NULL;
+}
 
 bool ASCURL_hmac_sha1(const std::string& pwd, const std::string& msg, std::string& out)
 {
     bool bSuccess = false;
 
-    auto libcryptoHandle = gpMetaUtilFuncs->pfnLoadLibrary("libcrypto.so.1.1");
+    auto libcryptoHandle = LoadLibCrypto();
 
     if (libcryptoHandle)
     {
@@ -704,7 +751,7 @@ bool ASCURL_hmac_sha1(const std::string& pwd, const std::string& msg, std::strin
         if (pfnEVP_sha1 && pfnHMAC)
         {
             auto key     = pwd.data();
-            auto keySize = pwd.size();
+            auto keySize = (int)pwd.size();
 
             auto data     = msg.data();
             auto dataSize = msg.size();
@@ -715,9 +762,8 @@ bool ASCURL_hmac_sha1(const std::string& pwd, const std::string& msg, std::strin
             {
                 out.resize(20);
                 memcpy((void*)out.data(), digest, 20);
+                bSuccess = true;
             }
-
-            bSuccess = true;
         }
 
         gpMetaUtilFuncs->pfnFreeLibrary(libcryptoHandle);
@@ -730,7 +776,7 @@ bool ASCURL_hmac_md5(const std::string& pwd, const std::string& msg, std::string
 {
     bool bSuccess = false;
 
-    auto libcryptoHandle = gpMetaUtilFuncs->pfnLoadLibrary("libcrypto.so.1.1");
+    auto libcryptoHandle = LoadLibCrypto();
 
     if (libcryptoHandle)
     {
@@ -740,7 +786,7 @@ bool ASCURL_hmac_md5(const std::string& pwd, const std::string& msg, std::string
         if (pfnEEVP_md5 && pfnHMAC)
         {
             auto key     = pwd.data();
-            auto keySize = pwd.size();
+            auto keySize = (int)pwd.size();
 
             auto data     = msg.data();
             auto dataSize = msg.size();
@@ -751,9 +797,8 @@ bool ASCURL_hmac_md5(const std::string& pwd, const std::string& msg, std::string
             {
                 out.resize(16);
                 memcpy((void*)out.data(), digest, 16);
+                bSuccess = true;
             }
-
-            bSuccess = true;
         }
 
         gpMetaUtilFuncs->pfnFreeLibrary(libcryptoHandle);
@@ -762,13 +807,11 @@ bool ASCURL_hmac_md5(const std::string& pwd, const std::string& msg, std::string
     return bSuccess;
 }
 
-#    include <openssl/md5.h>
-
 bool ASCURL_md5(const char* Data, int DataByte, std::string& out)
 {
     bool bSuccess = false;
 
-    auto libcryptoHandle = gpMetaUtilFuncs->pfnLoadLibrary("libcrypto.so.1.1");
+    auto libcryptoHandle = LoadLibCrypto();
 
     if (libcryptoHandle)
     {

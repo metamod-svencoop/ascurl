@@ -115,7 +115,7 @@ bool SC_SERVER_DECL CASEngineFuncs__md5(void* pthis SC_SERVER_DUMMYARG_NOCOMMA, 
 {
     std::string out;
 
-    if (ASCURL_md5(data->c_str(), data->length(), out))
+    if (ASCURL_md5(data->c_str(), (int)data->length(), out))
     {
         outhash->assign(out.c_str(), out.size());
         return true;
@@ -127,7 +127,7 @@ bool SC_SERVER_DECL CASEngineFuncs__md5(void* pthis SC_SERVER_DUMMYARG_NOCOMMA, 
 bool SC_SERVER_DECL CASEngineFuncs__base64_encode(void* pthis SC_SERVER_DUMMYARG_NOCOMMA, CString* hash, CString* out)
 {
     std::string outstr;
-    ASCURL_base64_encode(hash->c_str(), hash->length(), outstr);
+    ASCURL_base64_encode(hash->c_str(), (int)hash->length(), outstr);
     out->assign(outstr.c_str(), outstr.size());
 
     return true;
