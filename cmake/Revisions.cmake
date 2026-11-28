@@ -1,5 +1,5 @@
-# Metamod interface 5:18 with x86/x64 support and IGameDllProxyHost.
-set(MMFG_METAMOD_REVISION 299f62f7fc8a4c7373300258645dcf3d1fbf7481)
+# Metamod interface 5:18 with x86/x64 support, IGameDllProxyHost, and per-arch dlls/ install subdirs.
+set(MMFG_METAMOD_REVISION 9c1babcc9972525acc3470e9f32bc7f64327cd29)
 
-# ASExt with ISvenCoopAngelScriptExt host support and x86/x64 ABI alignment.
-set(MMFG_ASEXT_REVISION 87646e8c58067ec3f47cc1475b825d95c30bc3d7)
+# ASExt with ISvenCoopAngelScriptExt host support, x86/x64 ABI alignment, and ASEXT_PLUGIN_PATH.
+set(MMFG_ASEXT_REVISION 296908f014448d3cc2ab12eab55a073838e32e51)
